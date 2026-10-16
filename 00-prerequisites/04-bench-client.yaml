@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bench-client
+  namespace: token-factory
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bench-client
+  template:
+    metadata:
+      labels:
+        app: bench-client
+    spec:
+      enableServiceLinks: false
+      nodeSelector:
+        fpt-transform-lab: "true"
+      containers:
+        - name: bench
+          image: vllm/vllm-openai:v0.29.0
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -uo pipefail
+              if ! python3 -c "import pandas" >/dev/null 2>&1; then
+                echo "==> cài pandas cho dataset speed_bench"
+                pip install --no-cache-dir pandas || \
+                  echo "CẢNH BÁO: cài pandas thất bại — chỉ dùng được dataset random"
+              fi
+              python3 -c "import pandas; print('pandas', pandas.__version__)" || true
+              echo "bench-client sẵn sàng"
+              sleep infinity
+          env:
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: token
+            - name: MODEL_PATH
+              value: /models/unsloth/gemma-4-12b-it-NVFP4
+            - name: DATASET_DIR
+              value: /datasets/speed-bench
+          volumeMounts:
+            - name: model-cache
+              mountPath: /models
+              readOnly: true
+            - name: bench-results
+              mountPath: /results
+            - name: bench-datasets
+              mountPath: /datasets
+              readOnly: true
+          resources:
+            requests:
+              cpu: "8"
+              memory: 16Gi
+            limits:
+              cpu: "16"
+              memory: 32Gi
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: model-cache
+        - name: bench-results
+          persistentVolumeClaim:
+            claimName: bench-results
+        - name: bench-datasets
+          persistentVolumeClaim:
+            claimName: bench-datasets
+            readOnly: true

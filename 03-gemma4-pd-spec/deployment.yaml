@@ -1,0 +1,304 @@
+# PD disaggregation + DSpark on ONE GPU shared through KAI Scheduler + HAMi-core.
+#
+#   vllm-g4-pd1-prefill   pod, KAI slice gpu-memory 46000 MiB (~0.47 card)
+#   vllm-g4-pd1-decode    pod, KAI slice gpu-memory 46000 MiB (~0.47 card)
+#   vllm-g4-pd1           router pod, no GPU, Service :30000
+#
+# Why separate pods and not one pod with two GPU containers: KAI books a slice
+# per POD (the gpu-memory annotation), and kai-resource-isolator injects
+# HAMi-core into container index 0 only. A second GPU container in the same pod
+# would run with no memory cap at all.
+#
+# HAMi-core makes P see only its slice, so P's --gpu-memory-utilization is a
+# fraction of the SLICE: 0.90 x ~46 GB ~= 41 GB. D runs without HAMi-core (see
+# its labels) and sees the whole card: 0.42 x ~96 GB ~= 41 GB.
+#
+# KV goes P -> D GPU-to-GPU on the same card through UCX cuda_ipc
+# (hostNetwork/hostIPC/hostPID + UCX_CUDA_IPC_ENABLE_GET_ZCOPY=y): ~6 ms for
+# ~300 MB, versus 0.9 s idle and 15-40 s under load over TCP.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-g4-pd1-prefill
+  namespace: token-factory
+  labels: { app: vllm-g4-pd1-prefill, lab: "03-gemma4-pd-1gpu-kai" }
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate          # a surge pod would ask for a second slice
+  selector:
+    matchLabels:
+      app: vllm-g4-pd1-prefill
+  template:
+    metadata:
+      labels:
+        app: vllm-g4-pd1-prefill
+        lab: "03-gemma4-pd-1gpu-kai"
+        kai.scheduler/queue: fpt-transform-lab
+      annotations:
+        gpu-memory: "46000"
+    spec:
+      schedulerName: kai-scheduler
+      enableServiceLinks: false
+      # P and D share one card but sit in different pods. For NIXL to copy KV
+      # GPU-to-GPU with UCX cuda_ipc, both must look like the same machine to UCX
+      # (hostname + MAC -> host network) and see each other's processes and IPC
+      # handles (host PID/IPC). Otherwise UCX falls back to TCP through the host:
+      # ~8-22 MB/s under load for 329 MB of KV per 8k prompt.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      hostIPC: true
+      hostPID: true
+      nodeSelector: { fpt-transform-lab: "true" }
+      # GPU node reserved for KAI pods on the shared cluster (no-op where the taint is absent)
+      tolerations:
+        - { key: nvidia.com/kai-dedicated, operator: Equal, value: "true", effect: NoSchedule }
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: prefill     # GPU container stays at index 0 (HAMi-core injection)
+          image: vllm/vllm-openai:v0.29.0
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              MODEL=/models/unsloth/gemma-4-12b-it-NVFP4
+              SPEC='{"method":"dspark","model":"/models/speculators/deepseek-ai/dspark_gemma4_12b_block7","num_speculative_tokens":7,"attention_backend":"TRITON_ATTN"}'
+              exec vllm serve "$MODEL" \
+                --served-model-name=gemma4-12b --host=0.0.0.0 --port=8001 \
+                --trust-remote-code --tensor-parallel-size=1 \
+                --gpu-memory-utilization=0.90 --max-model-len=32768 \
+                --attention-backend=TRITON_ATTN --block-size=128 --enable-prefix-caching \
+                --language-model-only \
+                --reasoning-parser=gemma4 --tool-call-parser=gemma4 --enable-auto-tool-choice \
+                "--speculative-config=$SPEC" \
+                --max-num-batched-tokens=8192 --max-num-seqs=32 \
+                '--kv-transfer-config={"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_load_failure_policy":"fail"}'
+          env:
+            # D handshakes with P on this address, so it must be the pod IP.
+            - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+              valueFrom: { fieldRef: { fieldPath: status.podIP } }
+            - { name: VLLM_NIXL_SIDE_CHANNEL_PORT, value: "5600" }
+            # UCX turns cuda_ipc get (the RMA read NIXL uses to pull KV) off when it
+            # sees no NVLink. P and D are on the SAME card, so force it on.
+            - { name: UCX_CUDA_IPC_ENABLE_GET_ZCOPY, value: "y" }
+            - { name: UCX_PROTO_INFO, value: "y" }   # log the transport UCX picks
+            - { name: VLLM_CACHE_ROOT, value: /cache }
+            - { name: HF_HUB_OFFLINE, value: "1" }
+          ports:
+            - { name: prefill, containerPort: 8001 }
+            - { name: nixl,    containerPort: 5600 }
+          resources:
+            requests: { cpu: "4", memory: 48Gi }
+            limits:   { cpu: "12", memory: 64Gi }
+          volumeMounts:
+            - { name: model-cache, mountPath: /models, readOnly: true }
+            - { name: vllm-cache,  mountPath: /cache }
+            - { name: shm,         mountPath: /dev/shm }
+          startupProbe:
+            httpGet: { path: /health, port: 8001 }
+            failureThreshold: 150
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /health, port: 8001 }
+            periodSeconds: 10
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim: { claimName: model-cache, readOnly: true }
+        - name: vllm-cache
+          persistentVolumeClaim: { claimName: vllm-cache }
+        - name: shm
+          emptyDir: { medium: Memory, sizeLimit: 32Gi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-g4-pd1-decode
+  namespace: token-factory
+  labels: { app: vllm-g4-pd1-decode, lab: "03-gemma4-pd-1gpu-kai" }
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: vllm-g4-pd1-decode
+  template:
+    metadata:
+      labels:
+        app: vllm-g4-pd1-decode
+        lab: "03-gemma4-pd-1gpu-kai"
+        kai.scheduler/queue: fpt-transform-lab
+        # Opt D out of HAMi-core. Its allocation counter underflows on the UCX
+        # host-buffer register/deregister done for every NIXL KV transfer
+        # ("Device 0 OOM 18446742616772051968 / 49267343360"), then refuses every
+        # allocation and the engine dies at ~8 concurrent requests. KAI still
+        # books the 0.47 slice; D caps itself with --gpu-memory-utilization.
+        kai-resource-isolator.io/webhook: ignore
+      annotations:
+        gpu-memory: "46000"
+    spec:
+      schedulerName: kai-scheduler
+      enableServiceLinks: false
+      # P and D share one card but sit in different pods. For NIXL to copy KV
+      # GPU-to-GPU with UCX cuda_ipc, both must look like the same machine to UCX
+      # (hostname + MAC -> host network) and see each other's processes and IPC
+      # handles (host PID/IPC). Otherwise UCX falls back to TCP through the host:
+      # ~8-22 MB/s under load for 329 MB of KV per 8k prompt.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      hostIPC: true
+      hostPID: true
+      # Same node as P, i.e. the same card: cuda_ipc only works inside one machine.
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector: { matchLabels: { app: vllm-g4-pd1-prefill } }
+              topologyKey: kubernetes.io/hostname
+      nodeSelector: { fpt-transform-lab: "true" }
+      # GPU node reserved for KAI pods on the shared cluster (no-op where the taint is absent)
+      tolerations:
+        - { key: nvidia.com/kai-dedicated, operator: Equal, value: "true", effect: NoSchedule }
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: decode
+          image: vllm/vllm-openai:v0.29.0
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              # D sees the whole card, so start after P: otherwise vLLM's memory
+              # profiling counts P's model load as D's own usage (KV 27 -> 12 GiB).
+              until curl -sf http://vllm-g4-pd1-prefill:8001/health >/dev/null; do echo "[D] waiting for prefill..."; sleep 5; done
+              MODEL=/models/unsloth/gemma-4-12b-it-NVFP4
+              SPEC='{"method":"dspark","model":"/models/speculators/deepseek-ai/dspark_gemma4_12b_block7","num_speculative_tokens":7,"attention_backend":"TRITON_ATTN"}'
+              exec vllm serve "$MODEL" \
+                --served-model-name=gemma4-12b --host=0.0.0.0 --port=8002 \
+                --trust-remote-code --tensor-parallel-size=1 \
+                --gpu-memory-utilization=0.42 --max-model-len=32768 \
+                --attention-backend=TRITON_ATTN --block-size=128 --enable-prefix-caching \
+                --language-model-only \
+                --reasoning-parser=gemma4 --tool-call-parser=gemma4 --enable-auto-tool-choice \
+                "--speculative-config=$SPEC" \
+                --max-num-batched-tokens=8192 --max-num-seqs=64 \
+                '--kv-transfer-config={"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_load_failure_policy":"fail"}'
+          env:
+            - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+              valueFrom: { fieldRef: { fieldPath: status.podIP } }
+            - { name: VLLM_NIXL_SIDE_CHANNEL_PORT, value: "5601" }   # host network: must differ from P
+            # UCX turns cuda_ipc get (the RMA read NIXL uses to pull KV) off when it
+            # sees no NVLink. P and D are on the SAME card, so force it on.
+            - { name: UCX_CUDA_IPC_ENABLE_GET_ZCOPY, value: "y" }
+            - { name: UCX_PROTO_INFO, value: "y" }   # log the transport UCX picks
+            - { name: VLLM_CACHE_ROOT, value: /cache }
+            - { name: HF_HUB_OFFLINE, value: "1" }
+          ports:
+            - { name: decode, containerPort: 8002 }
+            - { name: nixl,   containerPort: 5601 }
+          resources:
+            requests: { cpu: "4", memory: 48Gi }
+            limits:   { cpu: "12", memory: 64Gi }
+          volumeMounts:
+            - { name: model-cache, mountPath: /models, readOnly: true }
+            - { name: vllm-cache,  mountPath: /cache }
+            - { name: shm,         mountPath: /dev/shm }
+          startupProbe:
+            httpGet: { path: /health, port: 8002 }
+            failureThreshold: 150
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /health, port: 8002 }
+            periodSeconds: 10
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim: { claimName: model-cache, readOnly: true }
+        - name: vllm-cache
+          persistentVolumeClaim: { claimName: vllm-cache }
+        - name: shm
+          emptyDir: { medium: Memory, sizeLimit: 32Gi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-g4-pd1
+  namespace: token-factory
+  labels: { app: vllm-g4-pd1, lab: "03-gemma4-pd-1gpu-kai" }
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vllm-g4-pd1
+  template:
+    metadata:
+      labels: { app: vllm-g4-pd1, lab: "03-gemma4-pd-1gpu-kai" }
+    spec:
+      enableServiceLinks: false
+      nodeSelector: { fpt-transform-lab: "true" }
+      # GPU node reserved for KAI pods on the shared cluster (no-op where the taint is absent)
+      tolerations:
+        - { key: nvidia.com/kai-dedicated, operator: Equal, value: "true", effect: NoSchedule }
+      containers:
+        - name: router
+          image: vllm/vllm-openai:v0.29.0
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              if ! command -v vllm-router >/dev/null 2>&1; then
+                echo "==> installing vllm-router"
+                (command -v uv >/dev/null 2>&1 && uv pip install --system vllm-router) \
+                  || pip install --no-cache-dir vllm-router
+              fi
+              P=http://vllm-g4-pd1-prefill:8001
+              D=http://vllm-g4-pd1-decode:8002
+              until curl -sf $P/health && curl -sf $D/health; do
+                echo "waiting for engines..."; sleep 10; done
+              exec vllm-router \
+                --policy round_robin \
+                --vllm-pd-disaggregation \
+                --prefill $P \
+                --decode  $D \
+                --host 0.0.0.0 \
+                --port 30000 \
+                --intra-node-data-parallel-size 1
+          env:
+            # The vLLM image sets NVIDIA_VISIBLE_DEVICES=all; hide the GPU from the router.
+            - { name: NVIDIA_VISIBLE_DEVICES, value: "void" }
+          ports:
+            - { name: http, containerPort: 30000 }
+          resources:
+            requests: { cpu: "1", memory: 4Gi }
+            limits:   { cpu: "4", memory: 8Gi }
+          readinessProbe:
+            tcpSocket: { port: 30000 }
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata: { name: vllm-g4-pd1-prefill, namespace: token-factory }
+spec:
+  selector: { app: vllm-g4-pd1-prefill }
+  ports:
+    - { name: http, port: 8001, targetPort: 8001 }
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata: { name: vllm-g4-pd1-decode, namespace: token-factory }
+spec:
+  selector: { app: vllm-g4-pd1-decode }
+  ports:
+    - { name: http, port: 8002, targetPort: 8002 }
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata: { name: vllm-g4-pd1, namespace: token-factory }
+spec:
+  selector: { app: vllm-g4-pd1 }
+  ports:
+    - { name: http, port: 30000, targetPort: 30000 }
+  type: ClusterIP

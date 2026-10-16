@@ -1,0 +1,19 @@
+# Leaf queue for every KAI-scheduled pod of this lab (cluster-scoped, needs
+# cluster-admin). Pods opt in with the label kai.scheduler/queue: fpt-transform-lab.
+#
+# gpu.quota is the queue's guaranteed share in GPUs. A Deployment is
+# non-preemptible, so KAI never schedules it past this quota even when the card
+# is idle: 1 = one whole card's worth of slices.
+#
+# The parent must have usable quotas too: KAI creates default-parent-queue with
+# quota 0, which blocks every child (README bài 03, Bước 1).
+apiVersion: scheduling.run.ai/v2
+kind: Queue
+metadata:
+  name: fpt-transform-lab
+spec:
+  parentQueue: default-parent-queue
+  resources:
+    cpu:    { quota: -1, limit: -1, overQuotaWeight: 1 }
+    gpu:    { quota: 1,  limit: -1, overQuotaWeight: 1 }
+    memory: { quota: -1, limit: -1, overQuotaWeight: 1 }

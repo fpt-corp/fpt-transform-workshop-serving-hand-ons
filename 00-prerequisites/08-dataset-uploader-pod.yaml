@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dataset-uploader
+  namespace: token-factory
+  labels:
+    app: dataset-uploader
+spec:
+  enableServiceLinks: false
+  restartPolicy: Never
+  nodeSelector:
+    fpt-transform-lab: "true"
+  containers:
+    - name: up
+      image: busybox:1.36
+      imagePullPolicy: IfNotPresent
+      command: ["sh", "-c"]
+      args:
+        - |
+          mkdir -p /datasets/speed-bench
+          echo "sẵn sàng nhận kubectl cp vào /datasets/speed-bench"
+          sleep 3600
+      volumeMounts:
+        - name: bench-datasets
+          mountPath: /datasets
+      resources:
+        requests: { cpu: "500m", memory: 512Mi }
+        limits:   { cpu: "1",    memory: 1Gi }
+  volumes:
+    - name: bench-datasets
+      persistentVolumeClaim:
+        claimName: bench-datasets

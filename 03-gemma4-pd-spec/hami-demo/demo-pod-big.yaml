@@ -1,0 +1,26 @@
+# A third slice of ~60 GB while hami-demo-a/b hold ~0.25 + 0.25 of the card.
+# 0.50 + 0.62 > 1.00, so KAI keeps this pod Pending (NonPreemptibleOverQuota).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hami-demo-big
+  namespace: token-factory
+  labels: { app: hami-demo, kai.scheduler/queue: fpt-transform-lab }
+  annotations:
+    gpu-memory: "60000"
+spec:
+  schedulerName: kai-scheduler
+  enableServiceLinks: false
+  nodeSelector: { fpt-transform-lab: "true" }
+  # GPU node reserved for KAI pods on the shared cluster (no-op where the taint is absent)
+  tolerations:
+    - { key: nvidia.com/kai-dedicated, operator: Equal, value: "true", effect: NoSchedule }
+  terminationGracePeriodSeconds: 5
+  containers:
+    - name: cuda
+      image: vllm/vllm-openai:v0.29.0
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "infinity"]
+      resources:
+        requests: { cpu: "1", memory: 4Gi }
+        limits:   { cpu: "2", memory: 8Gi }

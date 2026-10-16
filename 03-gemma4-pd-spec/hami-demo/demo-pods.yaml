@@ -1,0 +1,117 @@
+# HAMi-core demo: two pods, each asking KAI for a ~24 GB slice of the SAME card.
+#
+# A KAI fractional pod requests NO nvidia.com/gpu. It asks with three things:
+#   schedulerName: kai-scheduler       without it the default scheduler places the
+#                                      pod and it starts with no GPU at all
+#   label kai.scheduler/queue          a LEAF queue (kai/queue.yaml)
+#   annotation gpu-memory: "<MiB>"     the slice size
+# KAI picks the card, writes NVIDIA_VISIBLE_DEVICES + CUDA_DEVICE_MEMORY_LIMIT,
+# and kai-resource-isolator LD_PRELOADs HAMi-core to enforce the limit.
+#
+# The image is the vLLM one already pulled on the node (it has torch + nvidia-smi).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hami-demo-scripts
+  namespace: token-factory
+data:
+  alloc.py: |
+    # Allocate 1 GiB blocks until CUDA refuses, or until MAX_GIB.
+    import sys, torch
+    max_gib = int(sys.argv[1]) if len(sys.argv) > 1 else 200
+    free, total = torch.cuda.mem_get_info()
+    print(f"mem_get_info: total={total / 2**30:.1f} GiB, free={free / 2**30:.1f} GiB")
+    bufs = []
+    try:
+        while len(bufs) < max_gib:
+            bufs.append(torch.empty(1 << 30, dtype=torch.uint8, device="cuda"))
+            if len(bufs) % 4 == 0:
+                print(f"  allocated {len(bufs)} GiB", flush=True)
+    except (torch.OutOfMemoryError, RuntimeError) as e:
+        print(f"OOM after {len(bufs)} GiB: {str(e).splitlines()[0]}")
+    else:
+        print(f"reached {max_gib} GiB without OOM")
+  matmul.py: |
+    # BF16 matmul for DURATION seconds, prints TFLOPS every 5 s.
+    import sys, time, torch
+    dur = float(sys.argv[1]) if len(sys.argv) > 1 else 30
+    n = 8192
+    a = torch.randn(n, n, device="cuda", dtype=torch.bfloat16)
+    b = torch.randn(n, n, device="cuda", dtype=torch.bfloat16)
+    for _ in range(3):
+        a @ b
+    torch.cuda.synchronize()
+    start = last = time.time()
+    iters = 0
+    while time.time() - start < dur:
+        for _ in range(10):
+            a @ b
+        torch.cuda.synchronize()
+        iters += 10
+        now = time.time()
+        if now - last >= 5:
+            print(f"t={now - start:5.1f}s  {2 * n**3 * iters / (now - last) / 1e12:6.1f} TFLOPS", flush=True)
+            last, iters = now, 0
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hami-demo-a
+  namespace: token-factory
+  labels: { app: hami-demo, kai.scheduler/queue: fpt-transform-lab }
+  annotations:
+    gpu-memory: "24000"
+spec:
+  schedulerName: kai-scheduler
+  enableServiceLinks: false
+  nodeSelector: { fpt-transform-lab: "true" }
+  # GPU node reserved for KAI pods on the shared cluster (no-op where the taint is absent)
+  tolerations:
+    - { key: nvidia.com/kai-dedicated, operator: Equal, value: "true", effect: NoSchedule }
+  terminationGracePeriodSeconds: 5
+  containers:
+    # The isolator injects HAMi-core into container index 0 only, so the CUDA
+    # container must be first in any multi-container pod.
+    - name: cuda
+      image: vllm/vllm-openai:v0.29.0
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "infinity"]
+      resources:
+        requests: { cpu: "1", memory: 8Gi }
+        limits:   { cpu: "4", memory: 16Gi }
+      volumeMounts:
+        - { name: scripts, mountPath: /demo }
+  volumes:
+    - name: scripts
+      configMap: { name: hami-demo-scripts }
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hami-demo-b
+  namespace: token-factory
+  labels: { app: hami-demo, kai.scheduler/queue: fpt-transform-lab }
+  annotations:
+    gpu-memory: "24000"
+spec:
+  schedulerName: kai-scheduler
+  enableServiceLinks: false
+  nodeSelector: { fpt-transform-lab: "true" }
+  # GPU node reserved for KAI pods on the shared cluster (no-op where the taint is absent)
+  tolerations:
+    - { key: nvidia.com/kai-dedicated, operator: Equal, value: "true", effect: NoSchedule }
+  terminationGracePeriodSeconds: 5
+  containers:
+    - name: cuda
+      image: vllm/vllm-openai:v0.29.0
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "infinity"]
+      resources:
+        requests: { cpu: "1", memory: 8Gi }
+        limits:   { cpu: "4", memory: 16Gi }
+      volumeMounts:
+        - { name: scripts, mountPath: /demo }
+  volumes:
+    - name: scripts
+      configMap: { name: hami-demo-scripts }

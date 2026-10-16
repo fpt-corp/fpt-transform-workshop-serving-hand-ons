@@ -1,0 +1,36 @@
+# Same ~24 GB KAI slice as hami-demo-a/b, but opted OUT of kai-resource-isolator
+# with its ignore label. KAI still books and writes CUDA_DEVICE_MEMORY_LIMIT;
+# nothing loads HAMi-core, so nothing enforces it. This is exactly what a pod
+# looks like when the isolator webhook is down (failurePolicy: Ignore).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hami-demo-noiso
+  namespace: token-factory
+  labels:
+    app: hami-demo
+    kai.scheduler/queue: fpt-transform-lab
+    kai-resource-isolator.io/webhook: ignore
+  annotations:
+    gpu-memory: "24000"
+spec:
+  schedulerName: kai-scheduler
+  enableServiceLinks: false
+  nodeSelector: { fpt-transform-lab: "true" }
+  # GPU node reserved for KAI pods on the shared cluster (no-op where the taint is absent)
+  tolerations:
+    - { key: nvidia.com/kai-dedicated, operator: Equal, value: "true", effect: NoSchedule }
+  terminationGracePeriodSeconds: 5
+  containers:
+    - name: cuda
+      image: vllm/vllm-openai:v0.29.0
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "infinity"]
+      resources:
+        requests: { cpu: "1", memory: 8Gi }
+        limits:   { cpu: "4", memory: 16Gi }
+      volumeMounts:
+        - { name: scripts, mountPath: /demo }
+  volumes:
+    - name: scripts
+      configMap: { name: hami-demo-scripts }

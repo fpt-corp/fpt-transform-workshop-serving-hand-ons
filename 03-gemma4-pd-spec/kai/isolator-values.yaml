@@ -1,0 +1,32 @@
+# kai-resource-isolator: the part that actually ENFORCES a KAI GPU slice.
+#
+# KAI's binder only writes CUDA_DEVICE_MEMORY_LIMIT into the pod. Nothing stops
+# a process from allocating past it until this chart LD_PRELOADs HAMi-core
+# (libvgpu.so) into the container. Without it a fractional pod sees the whole card.
+#
+#   helm upgrade --install kai-resource-isolator \
+#     oci://docker.io/projecthami/kai-resource-isolator --version 1.1.0-chart \
+#     -n kai-resource-isolator --create-namespace -f kai/isolator-values.yaml
+
+webhook:
+  # MUST stay empty on a KAI cluster. The chart default lists nvidia.com/gpu,
+  # which would LD_PRELOAD HAMi-core into every whole-card pod (lessons 01/02).
+  # KAI fractional pods are injected regardless of this list.
+  gpuShareResources: ""
+  # Ignore, not Fail: the webhook sees every pod CREATE in the cluster. The cost
+  # is that a fractional pod created while it is down runs unenforced.
+  failurePolicy: Ignore
+
+librarySync:
+  # Copies libvgpu.so to /usr/local/vgpu on the host; only GPU nodes need it.
+  nodeSelector:
+    nvidia.com/gpu.present: "true"
+
+monitor:
+  # Per-container VRAM on :9394 (hami_container_device_memory_bytes).
+  enabled: true
+  nodeSelector:
+    nvidia.com/gpu.present: "true"
+  runtimeClassName: nvidia
+  serviceMonitor:
+    enabled: false
