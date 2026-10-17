@@ -44,7 +44,7 @@ k exec deploy/bench-client -- ls -lh /datasets/speed-bench/throughput_8k.jsonl
 
 - Model Gemma-4-12B NVFP4, vLLM 0.29, 1 GPU RTX PRO 6000 Blackwell.
 - Tải: 24 người dùng đồng thời, mỗi prompt khoảng 9k token, mỗi câu trả lời 4096 token.
-- Baseline: mỗi bước decode chỉ sinh **1 token** cho mỗi request, TPOT ~0,0187 s.
+- Baseline: mỗi bước decode chỉ sinh **1 token** cho mỗi request, TPOT ~0,0187 s (~53 token/s cho mỗi người dùng).
   GPU bị giới hạn bởi băng thông bộ nhớ chứ không phải compute.
 
 ### Bước 2 — serve DSpark
@@ -64,24 +64,29 @@ k rollout status deploy/vllm-g4-spec --timeout=15m
 k exec -i deploy/bench-client -- bash -s -- demo-02-dspark http://vllm-g4-spec:8000 < bench-c24.sh
 ```
 
-**Mong đợi:** sau ~90 giây, khối `Ket qua (don vi giay)` in throughput, TPOT, TTFT, E2E,
-thời gian chạy, acceptance length và `Successful requests: 24/24`. Chép các số đó
+**Mong đợi:** sau ~90 giây, khối `Ket qua (don vi giay)` in tốc độ mỗi người dùng, TPOT, E2E,
+acceptance length và `Successful requests: 24/24`. Chép các số đó
 vào cột DSpark ở Bước 4.
 
 ### Bước 4 — Điền bảng kết quả
 
 Tỉ lệ = DSpark ÷ Baseline; ↑ càng cao càng tốt, ↓ càng thấp càng tốt.
 
+- **Tốc độ mỗi người dùng** = 1000 ÷ TPOT median (ms): số token/giây một người thấy
+  câu trả lời chạy ra. Baseline sinh 1 token mỗi bước; DSpark sinh trung bình
+  ~4 token mỗi bước (acceptance length).
+- **TPOT**: thời gian trung bình cho mỗi token sau token đầu tiên.
+- **E2E latency**: thời gian từ lúc gửi đến khi nhận đủ 4096 token.
+
 | Chỉ số | Baseline | DSpark | DSpark / Baseline |
 |---|---|---|---|
-| Output throughput (tok/s) ↑ | 1237,6 | | |
+| Tốc độ mỗi người dùng (tok/s) ↑ | 53,4 | | |
 | TPOT median (s) ↓ | 0,0187 | | |
-| TTFT median (s) ↓ | 2,97 | | |
-| E2E latency median (s) ↓ | 79,37 | | |
-| E2E latency p99 (s) ↓ | 79,43 | | |
-| Benchmark duration (s) ↓ | 79,4 | | |
+| TPOT mean (s) ↓ | 0,0187 | | |
+| E2E latency median (s) ↓ | 81,12 | | |
+| E2E latency mean (s) ↓ | 81,12 | | |
 | Acceptance length (token/bước) | 1 | | — |
-| Successful requests | 24/24 | | — |
+| Successful requests | 24/24 | | — | 
 
 
 Kiểm tra lại bằng script (tuỳ chọn): in cùng bảng với tỉ lệ đã tính sẵn.

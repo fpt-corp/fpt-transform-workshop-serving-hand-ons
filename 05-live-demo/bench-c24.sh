@@ -36,12 +36,11 @@ python3 - "$OUT" <<'EOF'
 import json, sys
 d = json.load(open(sys.argv[1]))
 print("\n============ Ket qua (don vi giay) ============")
-print(f"Output throughput (tok/s):  {d['output_throughput']:.1f}")
+print(f"Per-user speed (tok/s):     {1000 / d['median_tpot_ms']:.1f}")
 print(f"TPOT median (s):            {d['median_tpot_ms'] / 1000:.4f}")
-print(f"TTFT median (s):            {d['median_ttft_ms'] / 1000:.2f}")
+print(f"TPOT mean (s):              {d['mean_tpot_ms'] / 1000:.4f}")
 print(f"E2E latency median (s):     {d['median_e2el_ms'] / 1000:.2f}")
-print(f"E2E latency p99 (s):        {d['p99_e2el_ms'] / 1000:.2f}")
-print(f"Benchmark duration (s):     {d['duration']:.1f}")
+print(f"E2E latency mean (s):       {d['mean_e2el_ms'] / 1000:.2f}")
 if d.get("spec_decode_acceptance_length"):
     print(f"Acceptance length:          {d['spec_decode_acceptance_length']:.2f}")
 print(f"Successful requests:        {d['completed']}/{d['num_prompts']}")

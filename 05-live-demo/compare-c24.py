@@ -1,6 +1,6 @@
 """Print the baseline vs DSpark table for the live demo (concurrency 24).
 
-Baseline numbers are fixed from the rehearsal run (lab 01, c=24, n=24, seed 0),
+Baseline numbers are fixed from one lab 01 run (c=24, n=24, seed 0, 2026-10-17),
 so only DSpark has to run during the demo.
 
 Run inside the bench-client pod:
@@ -11,12 +11,10 @@ import sys
 
 BASELINE_N = 24  # baseline was one full wave: 24 prompts at concurrency 24
 BASELINE = {
-    "output_throughput": 1237.6,
-    "median_tpot_ms": 18.66,
-    "median_ttft_ms": 2966,
-    "median_e2el_ms": 79370,
-    "p99_e2el_ms": 79428,
-    "duration": 79.4,
+    "median_tpot_ms": 18.72,
+    "mean_tpot_ms": 18.72,
+    "median_e2el_ms": 81120,
+    "mean_e2el_ms": 81117,
 }
 SPEC = "/results/demo-02-dspark-c24.json"
 
@@ -31,13 +29,16 @@ if s["num_prompts"] != BASELINE_N or s["completed"] != BASELINE_N:
         f"{BASELINE_N}/{BASELINE_N}. Re-run bench-c24.sh with the default NPROMPTS (24)."
     )
 
+# Decode speed one user sees, from the median time per output token.
+for d in (b, s):
+    d["user_tok_s"] = 1000 / d["median_tpot_ms"]
+
 rows = [
-    ("Output throughput (tok/s)", "output_throughput", "{:.1f}", "↑", 1),
+    ("Per-user speed (tok/s)", "user_tok_s", "{:.1f}", "↑", 1),
     ("TPOT median (s)", "median_tpot_ms", "{:.4f}", "↓", 1000),
-    ("TTFT median (s)", "median_ttft_ms", "{:.2f}", "↓", 1000),
+    ("TPOT mean (s)", "mean_tpot_ms", "{:.4f}", "↓", 1000),
     ("E2E latency median (s)", "median_e2el_ms", "{:.2f}", "↓", 1000),
-    ("E2E latency p99 (s)", "p99_e2el_ms", "{:.2f}", "↓", 1000),
-    ("Benchmark duration (s)", "duration", "{:.1f}", "↓", 1),
+    ("E2E latency mean (s)", "mean_e2el_ms", "{:.2f}", "↓", 1000),
 ]
 
 print(f"{'Metric':<28}{'Baseline':>12}{'DSpark':>12}{'DSpark/Base':>14}")
