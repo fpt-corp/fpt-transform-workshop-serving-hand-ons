@@ -348,6 +348,7 @@ Câu hỏi:
 | Hiện tượng | Nguyên nhân thường gặp | Cách xử lý |
 |---|---|---|
 | Pod P/D `Pending`, sự kiện `didn't have enough resources: GPU memory` | Card còn pod khác giữ: pod demo chưa dọn, hoặc deployment bài 01/02 còn chạy | `kubectl get pod -n token-factory -o wide`, xoá pod hoặc deployment cũ |
+| P `Running` trên một node, D `Pending` với `didn't have enough resources: GPU memory` | P bị KAI ghép vào card đã có slice của queue khác; D phải cùng card với P nên không còn chỗ | Giữ `podAntiAffinity` của P trong `deployment.yaml`; xem `kubectl get pod -A -o wide` và `kubectl -n kai-resource-reservation get pods -o wide` để biết card nào đang bị chia |
 | Pod `Pending`, `NonPreemptibleOverQuota` | Queue `fpt-transform-lab` hoặc `default-parent-queue` thiếu quota | Bước 1, phần quản trị viên |
 | Pod `Pending` mãi, scheduler log `<0> PodGroupInfos` | Nhãn `kai.scheduler/queue` trỏ vào queue cha thay vì queue lá | Giữ `fpt-transform-lab` như trong `deployment.yaml` |
 | `nvidia-smi` trong P/D báo cả card, không có `/etc/ld.so.preload` | Namespace có nhãn `kai-resource-isolator.io/webhook=ignore`, hoặc webhook isolator sập lúc tạo pod (fail open) | `kubectl label ns token-factory kai-resource-isolator.io/webhook-`, rồi `kubectl rollout restart` P và D |

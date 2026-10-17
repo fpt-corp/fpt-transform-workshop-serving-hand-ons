@@ -75,6 +75,9 @@ spec:
       enableServiceLinks: false
       nodeSelector:
         fpt-transform-lab: "true"
+      # GPU node reserved for KAI pods on the shared cluster (no-op where the taint is absent)
+      tolerations:
+        - { key: nvidia.com/kai-dedicated, operator: Equal, value: "true", effect: NoSchedule }
       containers:
         - name: bench
           image: vllm/vllm-openai:v0.29.0

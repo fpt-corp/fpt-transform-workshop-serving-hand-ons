@@ -50,6 +50,19 @@ spec:
       dnsPolicy: ClusterFirstWithHostNet
       hostIPC: true
       hostPID: true
+      # D follows P onto P's card, so P must pick a card with room for BOTH slices.
+      # KAI bin-packs: left alone it puts P on a card another queue already shares
+      # (e.g. a 0.50 slice), P fits (0.97) and D stays Pending forever. Keep P off
+      # nodes running KAI pods of any other queue.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - { key: kai.scheduler/queue, operator: Exists }
+                  - { key: kai.scheduler/queue, operator: NotIn, values: [fpt-transform-lab] }
+              namespaceSelector: {}
+              topologyKey: kubernetes.io/hostname
       nodeSelector: { fpt-transform-lab: "true" }
       # GPU node reserved for KAI pods on the shared cluster (no-op where the taint is absent)
       tolerations:

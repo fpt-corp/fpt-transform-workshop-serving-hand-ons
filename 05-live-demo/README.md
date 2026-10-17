@@ -17,7 +17,7 @@ Mọi lệnh dưới đây chạy từ thư mục `05-live-demo/` của repo.
 ### 1.1. Kiểm tra môi trường
 
 ```bash
-alias k="kubectl -n token-factory"
+alias k="k -n token-factory"
 cd 05-live-demo
 
 k get deploy bench-client
@@ -50,8 +50,8 @@ k exec deploy/bench-client -- ls -lh /datasets/speed-bench/throughput_8k.jsonl
 ### Bước 2 — serve DSpark
 
 ```bash
-grep -n "speculative-config" ../02-gemma4-spec-dspark/deployment.yaml
-k apply -f ../02-gemma4-spec-dspark/deployment.yaml
+grep -n "speculative-config" 02-gemma4-spec-dspark/deployment.yaml
+k apply -f 02-gemma4-spec-dspark/deployment.yaml
 k rollout status deploy/vllm-g4-spec --timeout=15m
 ```
 
