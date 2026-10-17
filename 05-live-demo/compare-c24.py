@@ -7,7 +7,9 @@ Run inside the bench-client pod:
   kubectl exec -i deploy/bench-client -- python3 - < compare-c24.py
 """
 import json
+import sys
 
+BASELINE_N = 24  # baseline was one full wave: 24 prompts at concurrency 24
 BASELINE = {
     "output_throughput": 1237.6,
     "median_tpot_ms": 18.66,
@@ -20,6 +22,14 @@ SPEC = "/results/demo-02-dspark-c24.json"
 
 b = BASELINE
 s = json.load(open(SPEC))
+
+# Throughput and duration only compare when both runs send the same wave. A
+# smoke test (n=1) left in SPEC measures one stream, not 24 in parallel.
+if s["num_prompts"] != BASELINE_N or s["completed"] != BASELINE_N:
+    sys.exit(
+        f"!! {SPEC}: {s['completed']}/{s['num_prompts']} requests, baseline used "
+        f"{BASELINE_N}/{BASELINE_N}. Re-run bench-c24.sh with the default NPROMPTS (24)."
+    )
 
 rows = [
     ("Output throughput (tok/s)", "output_throughput", "{:.1f}", "↑", 1),
